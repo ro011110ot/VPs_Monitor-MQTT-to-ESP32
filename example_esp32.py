@@ -1,61 +1,80 @@
 import network
 import ujson
-from umqtt.simple import MQTTClient
 import time
+from umqtt.simple import MQTTClient
+try:
+    import secrets
+except ImportError:
+    print("Error: secrets.py not found on device!")
+    # Fallback or dummy data for compilation check
+    class secrets:
+        WIFI_SSID = "NA"; WIFI_PASS = "NA"; MQTT_BROKER = "0.0.0.0"
+        MQTT_USER = "NA"; MQTT_PASS = "NA"; MQTT_TOPIC = b"vps/monitor"
 
-# --- Konfiguration ---
-WIFI_SSID = "DEIN_WLAN"
-WIFI_PASS = "DEIN_PASSWORT"
-
-MQTT_BROKER = "DEINE_VPS_IP_ODER_DOMAIN"
-MQTT_USER = "ro011110ot"
-MQTT_PASS = "DEIN_MQTT_PASSWORT"
-MQTT_TOPIC = b"vps/monitor"
-
-# --- WLAN Verbindung ---
 def connect_wifi():
+    """Connects to the local WiFi network using credentials from secrets.py"""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     if not wlan.isconnected():
-        print('Connecting to WiFi...')
-        wlan.connect(WIFI_SSID, WIFI_PASS)
+        print(f'Connecting to WiFi: {secrets.WIFI_SSID}...')
+        wlan.connect(secrets.WIFI_SSID, secrets.WIFI_PASS)
         while not wlan.isconnected():
-            pass
-    print('WiFi connected:', wlan.ifconfig()[0])
+            time.sleep(1)
+            print(".", end="")
+    print('\nWiFi connected! IP:', wlan.ifconfig()[0])
 
-# --- MQTT Callback (Hier passiert die Magie) ---
 def on_message(topic, msg):
-    print(f"Received from {topic.decode()}: {msg.decode()}")
+    """Callback function triggered when a new MQTT message is received"""
+    print(f"\nNew message on topic: {topic.decode()}")
     try:
+        # Parse the JSON payload from the VPS
         data = ujson.loads(msg)
         
-        # Zugriff auf die Werte vom VPS
-        cpu = data.get("cpu")
-        ram = data.get("ram")
-        uptime = data.get("uptime")
+        cpu = data.get("cpu", 0)
+        ram = data.get("ram", 0)
+        disk = data.get("disk", 0)
+        uptime = data.get("uptime", 0)
         
-        print(f"--- VPS Status ---")
+        # Displaying the data (you can route this to LVGL labels later)
+        print("--- VPS Status Report ---")
         print(f"CPU Usage: {cpu}%")
         print(f"RAM Usage: {ram}%")
-        print(f"Uptime:    {uptime}s")
-        
-        # Hier würdest du deine LVGL-Labels aktualisieren:
-        # my_label.set_text(f"CPU: {cpu}%")
+        print(f"Disk:      {disk}%")
+        print(f"Uptime:    {uptime} seconds")
+        print("-------------------------")
         
     except Exception as e:
-        print("Error parsing JSON:", e)
+        print("Failed to parse JSON:", e)
 
-# --- Main Flow ---
-connect_wifi()
+def main():
+    connect_wifi()
+    
+    # Initialize MQTT Client
+    client = MQTTClient(
+        client_id="esp32_vps_monitor",
+        server=secrets.MQTT_BROKER,
+        user=secrets.MQTT_USER,
+        password=secrets.MQTT_PASS,
+        port=1883
+    )
+    
+    client.set_callback(on_message)
+    
+    try:
+        client.connect()
+        client.subscribe(secrets.MQTT_TOPIC)
+        print(f"Subscribed to {secrets.MQTT_TOPIC.decode()}. Waiting for data...")
+        
+        while True:
+            # Check for new messages non-blocking
+            client.check_msg()
+            time.sleep(1)
+            
+    except Exception as e:
+        print("MQTT Connection Error:", e)
+        time.sleep(10)
+        import machine
+        machine.reset() # Auto-reboot on persistent connection loss
 
-client = MQTTClient("esp32_monitor", MQTT_BROKER, user=MQTT_USER, password=MQTT_PASS, port=1883)
-client.set_callback(on_message)
-client.connect()
-client.subscribe(MQTT_TOPIC)
-
-print("ESP32 Monitor is running...")
-
-while True:
-    # Auf neue Nachrichten vom VPS warten
-    client.check_msg()
-    time.sleep(1)
+if __name__ == "__main__":
+    main()
